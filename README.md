@@ -48,7 +48,7 @@ Your browser opens http://localhost:8777 with a setup page of three steps:
 
 Before step 3 you can tell the AI what you want in your own words, for example "I want videos in English" or "mostly gaming videos". The text shapes this one profile and is not saved. Later rebuilds keep the rules it produced and give the most weight to what you open, like and hide in the feed.
 
-The first videos show up after a few minutes, and the whole first search takes about 20 minutes. The gear icon in the corner opens the setup again later.
+The first videos show up within a minute, and more keep coming while the first search runs, for about 20 minutes. The gear icon in the corner opens the setup, and a second click brings you back to the feed.
 
 ## Choose your AI
 

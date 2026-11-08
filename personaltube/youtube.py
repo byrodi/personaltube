@@ -91,7 +91,8 @@ def import_takeout(path):
                     m = re.search(r"watch\?v=([\w-]{11})", str(item.get("titleUrl", "")) if isinstance(item, dict) else "")
                     if m:
                         channel = (item.get("subtitles") or [{}])[0].get("name", "")
-                        rows.append({"id": m[1], "title": item.get("title", ""), "channel": channel, "short": False})
+                        title = item.get("title", "").removeprefix("Watched ")  # Takeout writes "Watched <title>"
+                        rows.append({"id": m[1], "title": title, "channel": channel, "short": False})
         elif suffix == "html":
             text = read().decode("utf-8", "replace")
             rows = [{"id": m[1], "title": html.unescape(m[2]), "channel": html.unescape(m[3] or ""), "short": False}

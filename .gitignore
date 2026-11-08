@@ -5,3 +5,6 @@ dist/
 .venv/
 # personal data lives in ~/.personaltube, never in the repo
 private/
+
+# local Claude Code worktrees
+.claude/

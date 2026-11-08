@@ -15,8 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A setup page in the browser: AI provider, YouTube account and the interest profile, in three steps. An optional wish in your own words, like "I want videos in English", shapes the first profile.
 - YouTube import from the browser login (Chrome, Firefox, Safari, Edge, Brave, Chromium, Opera, Vivaldi) or from a Google Takeout export.
 - AI providers: OpenRouter, any OpenAI-compatible API, a Claude subscription through the Claude Code CLI, and a ChatGPT subscription through the Codex CLI.
-- Daily search for new videos with AI scoring from 0 to 10.
-- A one-page feed with a built-in player. It learns from opened, liked and hidden videos, and every reload gives a new mix.
+- Daily search for new videos with AI scoring from 0 to 10. New videos appear in the feed while the search runs.
+- A one-page feed with a built-in player. It learns from opened, liked and hidden videos, and every reload or click on the logo gives a new mix.
 
 [unreleased]: https://github.com/byrodi/personaltube/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/byrodi/personaltube/releases/tag/v0.1.0

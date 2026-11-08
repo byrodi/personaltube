@@ -116,6 +116,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             feed = store.read("feed.json") or {}
             return self.send_json({**state, "updating": engine.is_updating(),
                                    "ready": setup_state()["ready"], "feed": len(feed.get("videos", []))})
+        if path == "/api/progress":  # polled every few seconds while an update runs
+            p = engine.progress()
+            return self.send_json({**(p or {}), "updating": p is not None})
         if path == "/api/setup":
             return self.send_json(setup_state())
         if path == "/feed.json":

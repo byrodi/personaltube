@@ -25,4 +25,5 @@ jobs:
       - run: personaltube --version
       - run: personaltube --help
       - run: python -m compileall -q personaltube
+      - run: python -m unittest discover -s tests -v
       - run: node --check personaltube/site/app.js

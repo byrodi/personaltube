@@ -13,7 +13,9 @@ SEARCH_RESULTS = 25   # videos per search query
 CHANNEL_RESULTS = 12  # latest videos per seed channel
 MIN_SCORE = 6         # videos below this AI score never reach the feed
 KEEP_DAYS = 45        # forget feed videos found longer ago than this
-PUBLISH_EVERY = 40    # score and publish after this many YouTube requests
+FIRST_BATCH = 20      # score the first videos early so the feed fills up quickly
+LOCK = "update.lock"  # exists while an update runs; holds its progress for the site
+STALE_LOCK = 20 * 60  # a lock not written for this long belongs to an update that died
 
 state_lock = threading.Lock()
 _running = threading.Lock()  # one update at a time in this process
@@ -176,63 +178,69 @@ compilation spam, or matches no interest. Return JSON: {{"r": [[number, score, "
 with one entry per video."""
 
 
-def score_videos(videos, profile, state):
-    """Return {video_id: [score, interest_id]}."""
+
+
+def _score_prompt(profile, state):
     def fmt(items):
         return "\n".join(f"- {x['title']} ({x['channel']})" for x in items) or "- nothing yet"
 
-    system = SCORE_PROMPT.format(
+    return SCORE_PROMPT.format(
         interests="\n".join(f"- {i['id']} ({i['weight']}): {i['about']}" for i in profile["interests"]),
         avoid="; ".join(profile.get("avoid", [])),
         rules="\n".join(f"- {r}" for r in profile.get("rules", [])) or "- none",
         liked=fmt(list(state["liked"].values())[-25:]), hidden=fmt(list(state["hidden"].values())[-25:]))
 
-    def batch(chunk):
-        lines = [f"{n}. {v['title']} | {v['channel']} | {v['dur'] // 60} min | {v['views']} views"
-                 for n, v in enumerate(chunk)]
-        try:
-            rows = ai.ask(system, "\n".join(lines)).get("r", [])
-        except RuntimeError as e:
-            print(f"  skipped a batch: {e}", flush=True)
-            return {}
-        result = {}
-        for row in rows:
-            try:
-                result[chunk[int(row[0])]["id"]] = [float(row[1]), str(row[2])]
-            except (ValueError, IndexError, TypeError):
-                continue
-        return result
 
-    workers, size = ai.parallel()
-    chunks = [videos[i:i + size] for i in range(0, len(videos), size)]
-    scores = {}
-    with concurrent.futures.ThreadPoolExecutor(workers) as pool:
-        for n, part in enumerate(pool.map(batch, chunks), 1):
-            scores.update(part)
-            print(f"  scored {n}/{len(chunks)} batches", flush=True)
-    return scores
+def _score(system, chunk):
+    """Score one batch of videos. Returns {video_id: [score, interest_id]}."""
+    lines = [f"{n}. {v['title']} | {v['channel']} | {v['dur'] // 60} min | {v['views']} views"
+             for n, v in enumerate(chunk)]
+    try:
+        rows = ai.ask(system, "\n".join(lines)).get("r", [])
+    except RuntimeError as e:
+        print(f"  skipped a batch: {e}", flush=True)
+        return {}
+    result = {}
+    for row in rows:
+        try:
+            result[chunk[int(row[0])]["id"]] = [float(row[1]), str(row[2])]
+        except (ValueError, IndexError, TypeError):
+            continue
+    return result
 
 
 # ---------- update ----------
 
 def is_updating():
-    """True while an update runs in this process or in another `personaltube update`."""
-    lock = store.HOME / "update.lock"
-    return _running.locked() or (lock.exists() and time.time() - lock.stat().st_mtime < 3 * 3600)
+    """True while an update runs in this process, or in another one that still writes its progress."""
+    if _running.locked():
+        return True
+    try:
+        return time.time() - (store.HOME / LOCK).stat().st_mtime < STALE_LOCK
+    except OSError:  # no lock, or the update just removed it
+        return False
+
+
+def progress():
+    """What the running update is doing (requests done, videos found, checked, added), or None."""
+    if not is_updating():
+        return None
+    try:
+        data = store.read(LOCK)
+    except (OSError, ValueError):  # removed or replaced while reading
+        data = None
+    return data if isinstance(data, dict) else {}
 
 
 def update():
-    """Search YouTube for new videos, score them with AI and write feed.json."""
+    """Search YouTube for new videos, score them with AI and write feed.json as they come."""
     if is_updating() or not _running.acquire(blocking=False):
         print("Another update is already running.")
         return
-    lock = store.HOME / "update.lock"
     try:
-        store.HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
-        lock.write_text(str(os.getpid()))
         _update()
     finally:
-        lock.unlink(missing_ok=True)
+        (store.HOME / LOCK).unlink(missing_ok=True)
         _running.release()
 
 
@@ -248,28 +256,90 @@ def _update():
     for handle in profile.get("discovered", []) + [x["handle"] for x in state["liked"].values()]:
         seeds.setdefault(handle, "")
     seeds = [h for h in seeds if h.startswith("@") and hidden_channels[h] < 2]
-    jobs = [(youtube.search_url(q), SEARCH_RESULTS, None) for i in profile["interests"] for q in i["queries"]]
-    jobs += [(youtube.channel_url(h), CHANNEL_RESULTS, h) for h in seeds]
+    jobs = [(youtube.search_url(q), SEARCH_RESULTS, None, f'Searching "{q}"')
+            for i in profile["interests"] for q in i["queries"]]
+    jobs += [(youtube.channel_url(h), CHANNEL_RESULTS, h, f"Checking {h}") for h in seeds]
     random.shuffle(jobs)
 
-    found = {}
-    broken = set()
-    candidates, scores = [], {}
-    print(f"Searching YouTube: {len(jobs)} requests, about {len(jobs) * 6 // 60} minutes", flush=True)
-    for n, (url, limit, handle) in enumerate(jobs, 1):
-        result = youtube.videos(url, limit)
-        if result is None and handle:
-            broken.add(handle)  # wrong handle or no videos tab: stop asking for it
-        for v in result or []:
-            found.setdefault(v["id"], v)
-        if n % PUBLISH_EVERY == 0 or n == len(jobs):
-            print(f"  {n}/{len(jobs)} requests, {len(found)} videos", flush=True)
-            candidates, scores = _publish(found, profile, state)  # first videos show up early
-        time.sleep(random.uniform(1.5, 4))  # pace requests like a person browsing
+    skip = set(state["watched"]) | set(state["hidden"])
+    scores = store.read("scores.json", {})
+    now = time.time()
+    feed = {v["id"]: v for v in (store.read("feed.json") or {}).get("videos", [])  # keep earlier finds a while
+            if v["id"] not in skip and now - v["found"] < KEEP_DAYS * 86400}
+    interests = [{"id": i["id"], "name": i["name"], "weight": i["weight"]} for i in profile["interests"]]
+    report = {"total": len(jobs), "done": 0, "found": 0, "checked": 0, "added": 0, "feed": len(feed), "doing": ""}
+    found, pending, broken = {}, [], set()
+    lock = threading.Lock()  # found, scores, feed and report are shared with the scoring threads
+    dirty = True
+
+    def keep(v, score):
+        nonlocal dirty
+        if score[0] >= MIN_SCORE:
+            report["added"] += v["id"] not in feed
+            feed[v["id"]] = {**v, "score": score[0], "interest": score[1],
+                             "found": feed.get(v["id"], {}).get("found", time.time())}
+            dirty = True
+
+    def save():
+        nonlocal dirty
+        if dirty:
+            store.write("feed.json", {"generated": datetime.datetime.now().isoformat(timespec="minutes"),
+                                      "interests": interests, "videos": list(feed.values())})
+            dirty = False
+        report["feed"] = len(feed)
+        store.write(LOCK, report)  # the site reads progress from here
+
+    def scored(chunk):
+        result = _score(system, chunk)
+        with lock:
+            scores.update(result)
+            store.write("scores.json", scores)
+            report["checked"] += len(chunk)
+            for v in chunk:
+                if v["id"] in result:
+                    keep(v, result[v["id"]])
+            save()
+            print(f"  AI checked {report['checked']} of {report['found']}, feed: {len(feed)} videos", flush=True)
+
+    system = _score_prompt(profile, state)
+    workers, size = ai.parallel()
+    print(f"Searching YouTube: {len(jobs)} requests, about {len(jobs) * 7 // 60} minutes", flush=True)
+    with concurrent.futures.ThreadPoolExecutor(workers) as pool:
+        tasks = []
+        for n, (url, limit, handle, doing) in enumerate(jobs, 1):
+            with lock:
+                report["doing"] = doing
+                save()
+            result = youtube.videos(url, limit)
+            if result is None and handle:
+                broken.add(handle)  # wrong handle or no videos tab: stop asking for it
+            with lock:
+                for v in result or []:
+                    if v["id"] in found or v["id"] in skip:
+                        continue
+                    found[v["id"]] = v
+                    if v["id"] in scores:  # scored in an earlier update, no AI call needed
+                        keep(v, scores[v["id"]])
+                        report["checked"] += 1
+                    else:
+                        pending.append(v)
+                report.update(done=n, found=len(found), doing="" if n == len(jobs) else doing)
+                save()
+            # The AI scores in the background while the search goes on; the first batch is small
+            # so the first videos show up within a minute.
+            if pending and (len(pending) >= (size if tasks else FIRST_BATCH) or n == len(jobs)):
+                tasks.append(pool.submit(scored, pending))
+                pending = []
+            if n < len(jobs):
+                time.sleep(random.uniform(1.5, 4))  # pace requests like a person browsing
+    for task in tasks:
+        task.result()  # raise what failed in a scoring thread
+    dirty = True
+    save()  # a fresh "generated" time even when nothing new turned up
 
     # Channels whose videos the AI rates high become seed channels next time.
     per_channel = collections.defaultdict(list)
-    for v in candidates:
+    for v in found.values():
         if v["id"] in scores and v["handle"].startswith("@"):
             per_channel[v["handle"]].append(scores[v["id"]][0])
     good = sorted((h for h, s in per_channel.items() if len(s) >= 2 and sum(s) / len(s) >= 8),
@@ -278,34 +348,4 @@ def _update():
     for interest in profile["interests"]:
         interest["channels"] = [h for h in interest.get("channels", []) if h not in broken]
     store.write("profile.json", profile, pretty=True)
-    print("Update done.", flush=True)
-
-
-def _publish(found, profile, state):
-    """Score the videos found so far and write feed.json. Returns (candidates, scores)."""
-    skip = set(state["watched"]) | set(state["hidden"])
-    candidates = [v for v in found.values() if v["id"] not in skip]
-    scores = store.read("scores.json", {})
-    new = [v for v in candidates if v["id"] not in scores]
-    if new:
-        print(f"  scoring {len(new)} new videos with {ai.settings()['model'] or ai.settings()['provider']}", flush=True)
-        scores.update(score_videos(new, profile, state))
-        store.write("scores.json", scores)
-
-    now = time.time()
-    old = {v["id"]: v for v in (store.read("feed.json") or {}).get("videos", [])}
-    feed = {}
-    for v in candidates:
-        if v["id"] in scores and scores[v["id"]][0] >= MIN_SCORE:
-            feed[v["id"]] = {**v, "score": scores[v["id"]][0], "interest": scores[v["id"]][1],
-                             "found": old.get(v["id"], {}).get("found", now)}
-    for vid, v in old.items():  # keep good videos from earlier runs for a while
-        if vid not in feed and vid not in skip and now - v["found"] < KEEP_DAYS * 86400:
-            feed[vid] = v
-    store.write("feed.json", {
-        "generated": datetime.datetime.now().isoformat(timespec="minutes"),
-        "interests": [{"id": i["id"], "name": i["name"], "weight": i["weight"]} for i in profile["interests"]],
-        "videos": list(feed.values()),
-    })
-    print(f"  feed: {len(feed)} videos", flush=True)
-    return candidates, scores
+    print(f"Update done: {report['added']} new videos, feed: {len(feed)}.", flush=True)

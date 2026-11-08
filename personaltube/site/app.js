@@ -11,8 +11,18 @@ const ICON = {
 };
 const icon = (name) => `<svg viewBox="0 0 24 24" aria-hidden="true">${ICON[name]}</svg>`;
 
+// "..." at the end of a message about work in progress, cycling ... .. . ..
+const DOTS = ['...', '..', '.', '..'];
+let dotFrame = 0;
+const dots = () => `<span class="dots">${DOTS[dotFrame]}</span>`;
+setInterval(() => {
+  dotFrame = (dotFrame + 1) % DOTS.length;
+  for (const el of document.querySelectorAll('.dots')) el.textContent = DOTS[dotFrame];
+}, 400);
+
 let FEED;          // site/feed.json, written by personaltube.py
 let ST;            // watched / liked / hidden / seen, kept by the local server
+let PROG = {};     // progress of a running update: requests done, videos found, checked, added
 const byId = new Map();
 const interestName = new Map();
 let feedList = []; // ranked once per page load; a reload gives a new mix
@@ -35,7 +45,12 @@ const seenObserver = new IntersectionObserver((entries) => {
     seenObserver.unobserve(e.target);
   }
 }, { threshold: 0.6 });
-const flushSeen = () => { if (seenQueue.length) { post({ type: 'seen', ids: seenQueue }); seenQueue = []; } };
+const flushSeen = () => {
+  if (!seenQueue.length) return Promise.resolve();
+  const ids = seenQueue;
+  seenQueue = [];
+  return post({ type: 'seen', ids });
+};
 setInterval(flushSeen, 4000);
 addEventListener('pagehide', flushSeen);
 
@@ -58,10 +73,10 @@ function affinity() {
   return { ch, it };
 }
 
-function rank() {
+function rank(videos = FEED.videos) {
   const aff = affinity();
   const weight = Object.fromEntries(FEED.interests.map((i) => [i.id, Math.sqrt(i.weight)]));
-  const scored = FEED.videos
+  const scored = videos
     .filter((v) => !ST.watched[v.id] && !ST.hidden[v.id])
     .map((v) => [
       ((v.score - 4) / 6) ** 2                                   // AI score: 6 -> 0.11, 10 -> 1
@@ -130,9 +145,10 @@ function avatar(v) {
   for (const c of v.handle || v.channel) h = (h * 31 + c.charCodeAt(0)) % 360;
   return `<span class="av" style="--h:${h}" aria-hidden="true">${esc((v.channel || '?').trim()[0] || '?')}</span>`;
 }
-const thumb = (v) => `<a class="thumb" href="#/watch/${v.id}"><img src="https://i.ytimg.com/vi/${v.id}/mqdefault.jpg" alt="" loading="lazy"><span class="dur">${dur(v.dur)}</span></a>`;
+const thumb = (v) => `<a class="thumb" href="#/watch/${v.id}"><img src="https://i.ytimg.com/vi/${v.id}/mqdefault.jpg" alt="" loading="lazy" decoding="async"><span class="dur">${dur(v.dur)}</span></a>`;
 
-const card = (v) => `<article class="card${ST.watched[v.id] ? ' seen' : ''}" data-id="${v.id}">
+// `d` >= 0 fades the card in, d steps later than the first card of its batch.
+const card = (v, d = -1) => `<article class="card${ST.watched[v.id] ? ' seen' : ''}${d >= 0 ? ' new' : ''}"${d >= 0 ? ` style="--d:${d}"` : ''} data-id="${v.id}">
   ${thumb(v)}
   <div class="meta">${avatar(v)}
     <div class="txt">
@@ -149,39 +165,94 @@ const mini = (v) => `<div class="mini">${thumb(v)}<div class="txt">
   <span class="sub">${esc(v.channel)}</span><span class="sub">${stats(v)}</span></div></div>`;
 
 // ---------- feed ----------
-const view = $('#view');
+// The feed stays in the page, hidden, while a video or the setup is open, so going back is instant
+// even after hundreds of cards. Everything else is drawn in `page`.
+const feedEl = $('#feed');
+const page = $('#page');
+// `off` keeps the cards' layout in memory (content-visibility), so showing them again is cheap.
+const feedOff = () => feedEl.classList.contains('off');
+const showPage = (html) => { feedEl.classList.add('off'); page.innerHTML = html; };
+
+const onFeed = () => !/^#\/(watch|setup)/.test(location.hash);
 
 function showFeed() {
+  page.innerHTML = '';
+  feedEl.classList.remove('off');
   if (!feedList.length) {
-    view.innerHTML = ST.updating
-      ? '<div class="empty"><div class="spinner"></div>Looking for your first videos. They show up here in a few minutes, this page opens them by itself.</div>'
+    feedEl.innerHTML = ST.updating
+      ? `<div class="wait"><div class="spinner"></div><p>Looking for your first videos${dots()}</p><p class="live-line"></p></div>
+         <div class="grid">${'<div class="skel"><i></i><b></b><b></b></div>'.repeat(8)}</div>`
       : '<p class="empty">No videos yet. <a href="#/setup"><u>Open the setup</u></a> and press "Open my feed".</p>';
-    if (ST.updating) {
-      const poll = setInterval(() => fetch('/api/state').then((r) => r.json()).then((s) => {
-        if (s.feed >= 20 || !s.updating) { clearInterval(poll); location.reload(); }
-      }).catch(() => {}), 10000);
-    }
+    showStatus();
     return;
   }
-  view.innerHTML = '<div class="grid" id="grid"></div><div id="more"></div>';
-  const target = Math.max(30, rendered);
+  feedEl.innerHTML = '<div class="grid" id="grid"></div><div id="more"></div>';
   rendered = 0;
-  appendCards(target);
-  moreObserver = new IntersectionObserver((e) => e[0].isIntersecting && appendCards(30), { rootMargin: '1200px' });
+  appendCards(30, true);
+  moreObserver?.disconnect();
+  // A slow computer can get several changes at once; only the newest one counts.
+  moreObserver = new IntersectionObserver((e) => e[e.length - 1].isIntersecting && fillDown(), { rootMargin: '1200px' });
   moreObserver.observe($('#more'));
-  requestAnimationFrame(() => window.scrollTo(0, savedY));
+  window.scrollTo(0, 0);
 }
 
-function appendCards(n) {
+// Adds cards until the end of the list is well below the screen. The observer only reports changes,
+// and on a slow computer a fast scroll can bring the end back into range before it notices it left,
+// so it is armed again each time: observe() always reports the current state once.
+function fillDown() {
+  const more = $('#more');
+  if (!more || feedOff() || rendered >= feedList.length) return;
+  if (more.getBoundingClientRect().top > innerHeight + 1200) {
+    moreObserver.unobserve(more);
+    moreObserver.observe(more);
+    return;
+  }
+  appendCards(30);
+  requestAnimationFrame(fillDown);
+}
+
+// Only the first screen fades in: cards added by scrolling appear below the screen anyway.
+function appendCards(n, animate = false) {
   const grid = $('#grid');
   if (!grid) return;
   const part = feedList.slice(rendered, rendered + n);
-  grid.insertAdjacentHTML('beforeend', part.map(card).join(''));
+  grid.insertAdjacentHTML('beforeend', part.map((v, i) => card(v, animate ? Math.min(i, 12) : -1)).join(''));
   for (const el of [...grid.children].slice(rendered)) if (!ST.watched[el.dataset.id]) seenObserver.observe(el);
   rendered += part.length;
   if (rendered >= feedList.length) {
     moreObserver?.disconnect();
-    if (!$('.end')) view.insertAdjacentHTML('beforeend', '<div class="end">That is everything for now.<br><button class="pill" onclick="location.reload()">Show a new mix</button></div>');
+    if (!$('.end')) endBlock();
+  }
+}
+
+// The bottom of the feed: a live search while an update runs, otherwise a new mix.
+function endBlock() {
+  $('.end')?.remove();
+  feedEl.insertAdjacentHTML('beforeend', ST.updating
+    ? `<div class="end"><div class="spinner"></div>Finding more videos${dots()}<br>New ones appear here as soon as the AI picks them.<p class="live-line"></p></div>`
+    : '<div class="end">That is everything for now.<br><button class="pill" onclick="refresh()">Show a new mix</button></div>');
+  showStatus();
+}
+
+function setFeed(feed) {
+  FEED = feed;
+  for (const v of FEED.videos) byId.set(v.id, v);
+  for (const i of FEED.interests) interestName.set(i.id, i.name);
+}
+
+// Videos from a running update go below the cards already on the page, so nothing jumps.
+async function refreshFeed() {
+  const feed = await fetch('/feed.json').then((r) => r.json()).catch(() => null);
+  if (!feed) return;
+  setFeed(feed);
+  const shown = feedList.slice(0, rendered);
+  const ids = new Set(shown.map((v) => v.id));
+  feedList = [...shown, ...rank(FEED.videos.filter((v) => !ids.has(v.id)))];
+  if (!$('#grid')) {
+    if (feedList.length && onFeed()) showFeed(); // the first videos replace the waiting screen
+  } else if (rendered < feedList.length && $('.end')) {
+    $('.end').remove();
+    moreObserver.observe($('#more'));
   }
 }
 
@@ -197,12 +268,13 @@ const loadYt = () => (ytApi ||= new Promise((resolve) => {
 function watch(id) {
   const v = byId.get(id);
   if (!v) {
-    view.innerHTML = `<p class="empty">This video is not in your feed anymore. <a href="https://www.youtube.com/watch?v=${esc(id)}" target="_blank" rel="noopener"><u>Open it on YouTube</u></a></p>`;
+    showPage(`<p class="empty">This video is not in your feed anymore. <a href="https://www.youtube.com/watch?v=${esc(id)}" target="_blank" rel="noopener"><u>Open it on YouTube</u></a></p>`);
     return;
   }
   if (!ST.watched[id]) {
     ST.watched[id] = info(v);
     post({ type: 'watch', id, video: info(v) });
+    feedEl.querySelector(`.card[data-id="${id}"]`)?.classList.add('seen');
   }
   const others = feedList.filter((x) => x.id !== id && !ST.watched[x.id] && !ST.hidden[x.id]);
   const next = [...new Set([
@@ -211,7 +283,7 @@ function watch(id) {
     ...others,
   ])].slice(0, 20);
   const liked = !!ST.liked[id];
-  view.innerHTML = `<div class="watch" data-id="${id}">
+  showPage(`<div class="watch" data-id="${id}">
     <div>
       <div class="player"><div id="player"></div></div>
       <h1 class="w-title">${esc(v.title)}</h1>
@@ -226,7 +298,7 @@ function watch(id) {
       <div class="why"><b>${stats(v)}</b><p>Picked for you: ${esc(interestName.get(v.interest) || v.interest)} · AI match ${v.score}/10</p></div>
     </div>
     <aside class="next"><h2>Up next</h2>${next.map(mini).join('')}</aside>
-  </div>`;
+  </div>`);
   window.scrollTo(0, 0);
 
   loadYt().then(() => {
@@ -276,8 +348,14 @@ document.addEventListener('click', (e) => {
       post({ type: 'unhide', id: v.id });
       root.classList.remove('gone');
     };
-    if (root.classList.contains('watch')) history.back();
-    toast('Got it, fewer videos like this', root.classList.contains('watch') ? null : undo);
+    if (root.classList.contains('watch')) {
+      feedEl.querySelector(`.card[data-id="${v.id}"]`)?.classList.add('gone');
+      // route() clears toasts when the page changes, so this one waits until the feed is back
+      addEventListener('hashchange', () => toast('Got it, fewer videos like this'), { once: true });
+      history.back();
+    } else {
+      toast('Got it, fewer videos like this', undo);
+    }
   }
 });
 
@@ -301,7 +379,7 @@ function renderSetup() {
       <input type="radio" name="provider" value="${p.id}"${p.id === S.provider ? ' checked' : ''}${p.installed ? '' : ' disabled'}>
       <span>${esc(p.label)}${p.installed ? '' : '<small>Not installed on this computer</small>'}</span></label>`).join('');
   const yt = S.youtube ? `Imported ${S.youtube.history.toLocaleString("en")} watched videos, ${S.youtube.likes.toLocaleString("en")} likes and ${S.youtube.subs.toLocaleString("en")} subscriptions.` : '';
-  view.innerHTML = `<div class="setup">
+  showPage(`<div class="setup">
     <h1>Set up PersonalTube</h1>
     <p class="muted">Three steps. Everything stays on this computer.</p>
 
@@ -345,22 +423,27 @@ function renderSetup() {
     </section>
 
     ${S.ready ? '<button class="pill primary big" id="start">Open my feed</button>' : ''}
-  </div>`;
+  </div>`);
 
   const showExtra = () => {
     const chosen = $('input[name=provider]:checked')?.value;
-    for (const el of view.querySelectorAll('.extra')) el.hidden = el.dataset.for !== chosen;
+    for (const el of page.querySelectorAll('.extra')) el.hidden = el.dataset.for !== chosen;
   };
-  for (const r of view.querySelectorAll('input[name=provider]')) r.onchange = showExtra;
+  for (const r of page.querySelectorAll('input[name=provider]')) r.onchange = showExtra;
   showExtra();
 
-  // Runs one setup action: busy button, then the new state or the error message.
-  const run = async (btn, msgId, busyText, call) => {
+  // Runs one setup action: a spinner and a seconds counter on the button, then the new state or the error.
+  const run = async (btn, msgId, busyText, call, hint = '') => {
     const label = btn.textContent;
+    const t0 = Date.now();
+    const tick = () => {
+      btn.innerHTML = `<span class="spin"></span>${esc(busyText)}${dots()} <span class="secs">${Math.floor((Date.now() - t0) / 1000)}s</span>`;
+    };
     btn.disabled = true;
-    btn.textContent = busyText;
-    $(msgId).className = 'msg';
-    $(msgId).textContent = '';
+    tick();
+    const timer = setInterval(tick, 1000);
+    $(msgId).className = 'msg muted';
+    $(msgId).textContent = hint;
     try {
       const res = await call();
       if (!res.ok) throw new Error(res.error || 'Something went wrong.');
@@ -371,26 +454,29 @@ function renderSetup() {
       btn.textContent = label;
       $(msgId).className = 'msg err';
       $(msgId).textContent = e.message;
+    } finally {
+      clearInterval(timer);
     }
   };
 
   $('#save-ai').onclick = (e) => {
     const provider = $('input[name=provider]:checked')?.value;
-    run(e.target, '#msg-ai', 'Checking…', () => callApi('/api/setup/ai', {
+    run(e.currentTarget, '#msg-ai', 'Checking the AI', () => callApi('/api/setup/ai', {
       provider,
       api_key: provider === 'openai' ? $('#key-openai').value : $('#key-openrouter').value,
       base_url: $('#base-url').value,
       model: $('#model').value,
     }));
   };
-  $('#connect').onclick = (e) => run(e.target, '#msg-yt', 'Reading your history… up to a minute',
-    () => callApi('/api/setup/youtube', { browser: $('#browser').value }));
+  $('#connect').onclick = (e) => run(e.currentTarget, '#msg-yt', 'Reading your history',
+    () => callApi('/api/setup/youtube', { browser: $('#browser').value }), 'Usually up to a minute.');
   $('#takeout').onchange = (e) => {
     const file = e.target.files[0];
-    if (file) run($('#connect'), '#msg-yt', 'Reading the file…',
+    if (file) run($('#connect'), '#msg-yt', 'Reading the file',
       () => fetch('/api/setup/takeout', { method: 'POST', headers: { 'X-Filename': file.name }, body: file }).then((r) => r.json()));
   };
-  $('#build').onclick = (e) => run(e.target, '#msg-profile', 'Thinking… about a minute', () => callApi('/api/setup/profile', { wish: $('#wish').value }));
+  $('#build').onclick = (e) => run(e.currentTarget, '#msg-profile', 'Thinking',
+    () => callApi('/api/setup/profile', { wish: $('#wish').value }), 'Usually about a minute.');
   $('#start')?.addEventListener('click', async () => {
     await callApi('/api/setup/start');
     location.hash = '#/';
@@ -402,39 +488,125 @@ function renderSetup() {
 function route() {
   $('.toast')?.remove();
   const m = location.hash.match(/^#\/watch\/([\w-]{11})$/);
-  if (location.hash === '#/setup') {
-    moreObserver?.disconnect();
+  const setup = location.hash === '#/setup';
+  const gear = $('#gear'); // a second click on the gear goes back to the feed
+  gear.href = setup ? '#/' : '#/setup';
+  gear.title = setup ? 'Back to your feed' : 'Settings';
+  gear.setAttribute('aria-label', gear.title);
+  gear.classList.toggle('on', setup);
+  if (!feedOff() && (setup || m)) savedY = window.scrollY; // leaving the feed
+  if (setup) {
     showSetup();
   } else if (m) {
-    if (!$('.watch')) savedY = window.scrollY;
-    moreObserver?.disconnect();
     watch(m[1]);
+  } else if ($('#grid')) { // back to the feed that is still in the page
+    page.innerHTML = '';
+    feedEl.classList.remove('off');
+    window.scrollTo(0, savedY);
   } else {
     showFeed();
   }
 }
 
-function showStatus() {
-  if (!FEED.generated) { $('#status').textContent = ST.updating ? 'Looking for videos…' : ''; return; }
-  const hours = (Date.now() - new Date(FEED.generated).getTime()) / 36e5;
-  const when = hours < 1 ? 'less than an hour ago' : hours < 48 ? `${Math.round(hours)} h ago` : `${Math.round(hours / 24)} days ago`;
-  $('#status').textContent = `${FEED.videos.length.toLocaleString('en')} videos · ${ST.updating ? 'looking for more…' : `updated ${when}`}`;
+// ---------- status: video count and what the update does right now ----------
+let shownCount = 0;
+
+function countTo(n) {
+  const el = $('#count');
+  const from = shownCount;
+  shownCount = n;
+  if (!from || n <= from) { el.textContent = n.toLocaleString('en'); return; }
+  const t0 = performance.now();
+  const step = (t) => {
+    if (shownCount !== n) return; // a newer count took over
+    const k = Math.min(1, (t - t0) / 900);
+    el.textContent = Math.round(from + (n - from) * (1 - (1 - k) ** 3)).toLocaleString('en');
+    if (k < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+  const gain = $('#gain');
+  gain.textContent = `+${(n - from).toLocaleString('en')}`;
+  for (const x of [gain, el]) { x.classList.remove('show'); void x.offsetWidth; x.classList.add('show'); }
 }
 
+function showStatus() {
+  if (!FEED) return;
+  const live = !!ST.updating;
+  const n = FEED.videos.length;
+  const p = PROG;
+  const pct = live && p.total ? Math.round((100 * p.done) / p.total) : 0;
+  if (!n && !live) {
+    $('#count').textContent = $('#note').textContent = '';
+  } else {
+    countTo(n);
+    let phase = live ? ` · ${p.total ? `${pct}% · ` : ''}finding more${dots()}` : '';
+    if (!live && FEED.generated) {
+      const hours = (Date.now() - new Date(FEED.generated).getTime()) / 36e5;
+      phase = ` · updated ${hours < 1 ? 'less than an hour ago' : hours < 48 ? `${Math.round(hours)} h ago` : `${Math.round(hours / 24)} days ago`}`;
+    }
+    $('#note').innerHTML = `videos<span class="phase">${phase}</span>`;
+  }
+  const fmt = (x) => (x || 0).toLocaleString('en');
+  const line = !live || !p.total ? '' : [
+    p.doing || 'The AI is checking the last videos',
+    `searched ${p.done} of ${p.total}`, `${fmt(p.found)} found`, `${fmt(p.checked)} checked by AI`,
+  ].join(' · ');
+  for (const el of document.querySelectorAll('.live-line')) el.innerHTML = live && !p.total ? `Starting${dots()}` : esc(line);
+  $('#status').title = line;
+}
+
+// While an update runs, check its progress every few seconds and add new videos as they come.
+async function poll() {
+  const p = await fetch('/api/progress').then((r) => r.json()).catch(() => null);
+  if (p) {
+    const was = ST.updating;
+    ST.updating = p.updating;
+    PROG = p;
+    if (p.updating ? p.feed != null && p.feed !== FEED.videos.length : was) await refreshFeed();
+    if (was !== p.updating && onFeed()) {
+      if (!feedList.length) showFeed();
+      else if ($('.end')) endBlock();
+    }
+    showStatus();
+  }
+  setTimeout(poll, ST.updating ? 3000 : 30000);
+}
+
+// ---------- loading ----------
+async function load() {
+  await flushSeen(); // the new mix should know what was just on screen
+  const [feed, state] = await Promise.all([
+    fetch('/feed.json').then((r) => r.json()),
+    fetch('/api/state').then((r) => r.json()),
+  ]);
+  ST = state;
+  setFeed(feed);
+  feedList = rank();
+  rendered = 0;
+  savedY = 0;
+  feedEl.innerHTML = ''; // a new mix: the cards are drawn again
+}
+
+// The logo and "Show a new mix" work like YouTube's logo: a new mix from the top of the feed.
+async function refresh() {
+  await load().catch(() => {});
+  showStatus();
+  if (!onFeed()) { location.hash = '#/'; return; }
+  showFeed();
+}
+
+$('.logo').addEventListener('click', (e) => {
+  if (e.metaKey || e.ctrlKey || e.shiftKey || e.button) return; // opening in a new tab stays as is
+  e.preventDefault();
+  refresh();
+});
 window.addEventListener('hashchange', route);
 
-Promise.all([
-  fetch('/feed.json').then((r) => r.json()),
-  fetch('/api/state').then((r) => r.json()),
-]).then(([feed, state]) => {
-  FEED = feed;
-  ST = state;
-  for (const v of FEED.videos) byId.set(v.id, v);
-  for (const i of FEED.interests) interestName.set(i.id, i.name);
-  feedList = rank();
+load().then(() => {
   showStatus();
+  poll();
   if (!ST.ready && location.hash !== '#/setup') location.hash = '#/setup'; // first visit
   else route();
 }).catch(() => {
-  view.innerHTML = '<p class="empty">PersonalTube is not running. Start it with <code>personaltube</code> and open this page again.</p>';
+  showPage('<p class="empty">PersonalTube is not running. Start it with <code>personaltube</code> and open this page again.</p>');
 });

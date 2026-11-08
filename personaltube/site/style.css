@@ -39,7 +39,18 @@ svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width:
 .logo { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 19px; letter-spacing: -0.5px; }
 .mark { background: var(--accent); color: #fff; width: 30px; height: 22px; border-radius: 6px; display: grid; place-items: center; }
 .mark svg { width: 15px; height: 15px; fill: #fff; stroke: none; }
-.status { color: var(--muted); font-size: 12.5px; text-align: right; }
+.status { color: var(--muted); font-size: 12.5px; display: flex; align-items: center; white-space: nowrap; }
+.cnt { position: relative; }
+#count { display: inline-block; font-variant-numeric: tabular-nums; }
+#count.show { animation: bump .6s ease-out; }
+#note { margin-left: .3em; }
+.dots { display: inline-block; width: 1.1em; text-align: left; }
+.gain { position: absolute; left: 50%; bottom: 100%; transform: translateX(-50%); font-size: 11px; font-weight: 700; color: #2e9d5b; opacity: 0; pointer-events: none; }
+.gain.show { animation: gain 1.8s ease-out; }
+@media (max-width: 520px) { .phase { display: none; } }
+#gear.on { background: var(--bg2); color: var(--fg); }
+@keyframes bump { 30% { color: var(--accent); transform: scale(1.15); } }
+@keyframes gain { 0% { opacity: 0; transform: translate(-50%, 6px); } 20%, 70% { opacity: 1; transform: translate(-50%, 0); } 100% { opacity: 0; transform: translate(-50%, -6px); } }
 
 main { max-width: 2200px; margin: 0 auto; padding: 8px 24px 64px; padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px)); }
 @media (max-width: 600px) {
@@ -69,11 +80,25 @@ main { max-width: 2200px; margin: 0 auto; padding: 8px 24px 64px; padding-bottom
 .card .icon-btn { opacity: 0; transition: opacity .15s; }
 .card:hover .icon-btn, .card .icon-btn:focus-visible { opacity: 1; }
 @media (hover: none) { .card .icon-btn { opacity: 1; } }
+/* Cards off screen are not drawn: scrolling and going back stay light with hundreds of cards. */
+.card { content-visibility: auto; contain-intrinsic-size: auto 330px; }
 .card.gone { display: none; }
+.card.new { animation: rise .45s ease-out backwards; animation-delay: calc(var(--d, 0) * 40ms); }
+@keyframes rise { from { opacity: 0; transform: translateY(12px); } }
 
 .empty, .end { color: var(--muted); font-size: 15px; padding: 48px 0; text-align: center; }
 .end button { margin-top: 12px; }
 #more { height: 1px; }
+#feed.off { content-visibility: hidden; }
+@supports not (content-visibility: hidden) { #feed.off { display: none; } }
+.wait { text-align: center; color: var(--muted); font-size: 15px; padding: 32px 0 28px; }
+.wait p { margin: 0; }
+.live-line { color: var(--muted); font-size: 12.5px; margin: 8px auto 0; min-height: 1.4em; max-width: 680px; }
+.skel i, .skel b { display: block; border-radius: 12px; background: linear-gradient(90deg, var(--bg2) 30%, var(--bg3) 50%, var(--bg2) 70%) 0 0 / 300% 100%; animation: shimmer 1.5s linear infinite; }
+.skel i { aspect-ratio: 16 / 9; }
+.skel b { height: 12px; border-radius: 6px; margin-top: 12px; width: 85%; }
+.skel b + b { width: 55%; margin-top: 8px; }
+@keyframes shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
 
 /* watch page */
 .watch { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 24px; max-width: 1720px; margin: 8px auto 0; }
@@ -148,3 +173,10 @@ main { max-width: 2200px; margin: 0 auto; padding: 8px 24px 64px; padding-bottom
 code { background: var(--bg2); padding: 1px 5px; border-radius: 5px; font-size: 12.5px; }
 .spinner { width: 28px; height: 28px; margin: 0 auto 14px; border: 3px solid var(--bg3); border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+.spin { width: 14px; height: 14px; flex: none; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
+.secs { opacity: .75; font-variant-numeric: tabular-nums; }
+.msg.muted { color: var(--muted); }
+
+@media (prefers-reduced-motion: reduce) {
+  .card.new, .gain.show, #count.show, .skel i, .skel b { animation: none; }
+}
