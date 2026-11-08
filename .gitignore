@@ -1,0 +1,7 @@
+__pycache__/
+*.egg-info/
+build/
+dist/
+.venv/
+# personal data lives in ~/.personaltube, never in the repo
+private/

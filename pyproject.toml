@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "personaltube"
+version = "0.1.0"
+description = "Your own YouTube home feed, picked by AI from your watch history."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "rodionmasalov" }]
+dependencies = ["yt-dlp>=2025.1.1"]
+keywords = ["youtube", "recommendations", "feed", "ai", "openrouter", "yt-dlp", "claude", "codex", "python", "cli"]
+
+[project.urls]
+Homepage = "https://github.com/byrodi/personaltube"
+Issues = "https://github.com/byrodi/personaltube/issues"
+Changelog = "https://github.com/byrodi/personaltube/blob/main/CHANGELOG.md"
+
+[project.scripts]
+personaltube = "personaltube.cli:main"
+
+[tool.setuptools]
+packages = ["personaltube"]
+
+[tool.setuptools.package-data]
+personaltube = ["site/*"]
