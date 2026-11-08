@@ -145,6 +145,12 @@ function avatar(v) {
   for (const c of v.handle || v.channel) h = (h * 31 + c.charCodeAt(0)) % 360;
   return `<span class="av" style="--h:${h}" aria-hidden="true">${esc((v.channel || '?').trim()[0] || '?')}</span>`;
 }
+// The channel on YouTube in a new tab: `handle` is @name or a UC… channel id. Plain text when it is unknown.
+function chLink(v, html, cls = 'ch') {
+  if (!v.handle) return `<span class="${cls}">${html}</span>`;
+  const path = v.handle.startsWith('@') ? v.handle : 'channel/' + v.handle;
+  return `<a class="${cls}" href="https://www.youtube.com/${esc(path)}" target="_blank" rel="noopener" title="Open the channel on YouTube">${html}</a>`;
+}
 const thumb = (v) => `<a class="thumb" href="#/watch/${v.id}"><img src="https://i.ytimg.com/vi/${v.id}/mqdefault.jpg" alt="" loading="lazy" decoding="async"><span class="dur">${dur(v.dur)}</span></a>`;
 
 // `d` >= 0 fades the card in, d steps later than the first card of its batch.
@@ -153,7 +159,7 @@ const card = (v, d = -1) => `<article class="card${ST.watched[v.id] ? ' seen' : 
   <div class="meta">${avatar(v)}
     <div class="txt">
       <a class="title" href="#/watch/${v.id}" title="${esc(v.title)}">${esc(v.title)}</a>
-      <span class="sub">${esc(v.channel)}</span>
+      <span class="sub">${chLink(v, esc(v.channel))}</span>
       <span class="sub">${stats(v)}</span>
     </div>
     <button class="icon-btn" data-act="hide" title="Not interested">${icon('hide')}</button>
@@ -162,7 +168,7 @@ const card = (v, d = -1) => `<article class="card${ST.watched[v.id] ? ' seen' : 
 
 const mini = (v) => `<div class="mini">${thumb(v)}<div class="txt">
   <a class="title" href="#/watch/${v.id}" title="${esc(v.title)}">${esc(v.title)}</a>
-  <span class="sub">${esc(v.channel)}</span><span class="sub">${stats(v)}</span></div></div>`;
+  <span class="sub">${chLink(v, esc(v.channel))}</span><span class="sub">${stats(v)}</span></div></div>`;
 
 // ---------- feed ----------
 // The feed stays in the page, hidden, while a video or the setup is open, so going back is instant
@@ -288,7 +294,7 @@ function watch(id) {
       <div class="player"><div id="player"></div></div>
       <h1 class="w-title">${esc(v.title)}</h1>
       <div class="w-row">
-        <span class="w-ch">${avatar(v)}${esc(v.channel)}</span>
+        ${chLink(v, avatar(v) + esc(v.channel), 'w-ch')}
         <div class="w-actions">
           <button class="pill${liked ? ' on' : ''}" data-act="like" aria-pressed="${liked}">${icon('like')}Like</button>
           <button class="pill" data-act="hide">${icon('hide')}Not interested</button>
