@@ -24,8 +24,8 @@ PROVIDERS = {
 CLI = {"claude": "claude", "codex": "codex"}
 
 
-def settings():
-    ai = store.config()["ai"]
+def settings(ai_cfg=None):
+    ai = ai_cfg or store.config()["ai"]
     _, model, profile_model = PROVIDERS[ai["provider"]]
     model = ai["model"] or model
     return {**ai, "model": model, "profile_model": ai["profile_model"] or profile_model or model}
@@ -37,19 +37,20 @@ def parallel():
     return (2, 100) if provider in CLI else (4, 60)
 
 
-def ask(system, user, big=False):
+def ask(system, user, big=False, ai_cfg=None, tries=3):
     """Send one request and return the JSON object from the answer. big=True uses the profile model."""
-    s = settings()
+    s = settings(ai_cfg)
     model = s["profile_model"] if big else s["model"]
     call = {"openrouter": _http, "openai": _http, "claude": _claude, "codex": _codex}[s["provider"]]
     error = None
-    for attempt in range(3):
+    for attempt in range(tries):
         try:
             text = call(s, model, system, user)
             return json.loads(text[text.find("{"):text.rfind("}") + 1])
         except (OSError, ValueError, KeyError, IndexError, RuntimeError, subprocess.SubprocessError) as e:
             error = e
-            time.sleep(4 * (attempt + 1))
+            if attempt + 1 < tries:
+                time.sleep(4 * (attempt + 1))
     raise RuntimeError(f"AI request failed: {error}")
 
 
@@ -102,12 +103,16 @@ def _codex(s, model, system, user):
         return answer.read_text()
 
 
-def check(provider):
-    """Return an error message if the provider cannot work on this machine, else None."""
-    if provider in CLI and not shutil.which(CLI[provider]):
-        return f"The `{CLI[provider]}` command is not installed or not on PATH."
+def installed(provider):
+    return provider not in CLI or shutil.which(CLI[provider]) is not None
+
+
+def check(ai_cfg):
+    """Return an error message if this AI config does not answer, else None."""
+    if not installed(ai_cfg["provider"]):
+        return f"The `{CLI[ai_cfg['provider']]}` command is not installed on this computer."
     try:
-        ask("Answer with JSON only.", 'Return {"ok": true}')
+        ask("Answer with JSON only.", 'Return {"ok": true}', ai_cfg=ai_cfg, tries=1)
     except RuntimeError as e:
         return str(e)
     return None

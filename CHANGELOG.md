@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - First release.
-- `personaltube setup` asks for the feed language, the AI provider and the YouTube account, then builds an interest profile.
+- A setup page in the browser: feed language, AI provider, YouTube account and the interest profile, in three steps.
 - YouTube import from the browser login (Chrome, Firefox, Safari, Edge, Brave, Chromium, Opera, Vivaldi) or from a Google Takeout export.
 - AI providers: OpenRouter, any OpenAI-compatible API, a Claude subscription through the Claude Code CLI, and a ChatGPT subscription through the Codex CLI.
 - Daily search for new videos with AI scoring from 0 to 10.

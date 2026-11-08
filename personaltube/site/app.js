@@ -153,11 +153,13 @@ const view = $('#view');
 
 function showFeed() {
   if (!feedList.length) {
-    view.innerHTML = '<p class="empty">No videos yet. The first search for videos takes about 15-20 minutes. This page reloads by itself when it is done.</p>';
+    view.innerHTML = ST.updating
+      ? '<div class="empty"><div class="spinner"></div>Looking for your first videos. They show up here in a few minutes, this page opens them by itself.</div>'
+      : '<p class="empty">No videos yet. <a href="#/setup"><u>Open the setup</u></a> and press "Open my feed".</p>';
     if (ST.updating) {
       const poll = setInterval(() => fetch('/api/state').then((r) => r.json()).then((s) => {
-        if (!s.updating) { clearInterval(poll); location.reload(); }
-      }).catch(() => {}), 20000);
+        if (s.feed >= 20 || !s.updating) { clearInterval(poll); location.reload(); }
+      }).catch(() => {}), 10000);
     }
     return;
   }
@@ -279,11 +281,130 @@ document.addEventListener('click', (e) => {
   }
 });
 
+// ---------- setup (first visit, and the gear icon later) ----------
+let SETUP;
+
+async function callApi(path, body) {
+  const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+  return r.json();
+}
+
+async function showSetup() {
+  SETUP = await fetch('/api/setup').then((r) => r.json());
+  renderSetup();
+}
+
+function renderSetup() {
+  const S = SETUP;
+  const step = (done, open) => (done ? 'done' : open ? 'active' : 'locked');
+  const providers = S.providers.map((p) => `<label class="opt${p.installed ? '' : ' off'}">
+      <input type="radio" name="provider" value="${p.id}"${p.id === S.provider ? ' checked' : ''}${p.installed ? '' : ' disabled'}>
+      <span>${esc(p.label)}${p.installed ? '' : '<small>Not installed on this computer</small>'}</span></label>`).join('');
+  const yt = S.youtube ? `Imported ${S.youtube.history.toLocaleString("en")} watched videos, ${S.youtube.likes.toLocaleString("en")} likes and ${S.youtube.subs.toLocaleString("en")} subscriptions.` : '';
+  view.innerHTML = `<div class="setup">
+    <h1>Set up PersonalTube</h1>
+    <p class="muted">Three steps. Everything stays on this computer.</p>
+
+    <section class="step ${step(S.ai_ok, true)}">
+      <h2><span class="num">1</span>AI that picks your videos</h2>
+      <label class="field">Language of the videos in your feed<input id="lang" value="${esc(S.language)}"></label>
+      <div class="opts">${providers}</div>
+      <div class="extra" data-for="openrouter">
+        <label class="field">OpenRouter API key · <a href="https://openrouter.ai/keys" target="_blank" rel="noopener"><u>get a key</u></a>
+        <input id="key-openrouter" type="password" autocomplete="off" placeholder="${S.has_key && S.provider === 'openrouter' ? 'Saved. Leave empty to keep it' : 'sk-or-...'}"></label>
+      </div>
+      <div class="extra" data-for="claude"><p class="muted">Uses your Claude Code login. If you never signed in, run <code>claude</code> in a terminal once.</p></div>
+      <div class="extra" data-for="codex"><p class="muted">Uses your Codex CLI login. If you never signed in, run <code>codex login</code> in a terminal once.</p></div>
+      <div class="extra" data-for="openai">
+        <label class="field">API base URL<input id="base-url" value="${esc(S.provider === 'openai' ? S.base_url : '')}" placeholder="http://localhost:11434/v1"></label>
+        <label class="field">Model<input id="model" value="${esc(S.provider === 'openai' ? S.model : '')}" placeholder="llama3.1"></label>
+        <label class="field">API key (if needed)<input id="key-openai" type="password" autocomplete="off"></label>
+      </div>
+      <div class="row"><button class="pill primary" id="save-ai">Check and save</button><span class="msg" id="msg-ai">${S.ai_ok ? 'AI works.' : ''}</span></div>
+    </section>
+
+    <section class="step ${step(S.youtube, S.ai_ok)}">
+      <h2><span class="num">2</span>Your YouTube account</h2>
+      <p class="muted">PersonalTube reads your history, likes and subscriptions. It changes nothing in your account.</p>
+      <div class="row">
+        <select id="browser" aria-label="Browser">${S.browsers.map((b) => `<option${b === S.browser ? ' selected' : ''}>${b}</option>`).join('')}</select>
+        <button class="pill primary" id="connect">Use my browser login</button>
+      </div>
+      <p class="muted small">Pick the browser where you are signed in to YouTube. On a Mac, a window may ask to allow access to the browser's safe storage: click Allow.</p>
+      <div class="row"><label class="pill" for="takeout">Or upload a Google Takeout file</label>
+        <input id="takeout" type="file" accept=".zip,.json,.html" hidden><span class="msg" id="msg-yt">${yt}</span></div>
+    </section>
+
+    <section class="step ${step(S.interests.length, S.youtube)}">
+      <h2><span class="num">3</span>Your interests</h2>
+      <p class="muted">The AI reads your history and writes down what you like. It takes about a minute.</p>
+      <div class="row"><button class="pill primary" id="build">${S.interests.length ? 'Build again' : 'Build my profile'}</button><span class="msg" id="msg-profile"></span></div>
+      <div class="chips">${S.interests.map((i) => `<span class="chip">${esc(i)}</span>`).join('')}</div>
+    </section>
+
+    ${S.ready ? '<button class="pill primary big" id="start">Open my feed</button>' : ''}
+  </div>`;
+
+  const showExtra = () => {
+    const chosen = $('input[name=provider]:checked')?.value;
+    for (const el of view.querySelectorAll('.extra')) el.hidden = el.dataset.for !== chosen;
+  };
+  for (const r of view.querySelectorAll('input[name=provider]')) r.onchange = showExtra;
+  showExtra();
+
+  // Runs one setup action: busy button, then the new state or the error message.
+  const run = async (btn, msgId, busyText, call) => {
+    const label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = busyText;
+    $(msgId).className = 'msg';
+    $(msgId).textContent = '';
+    try {
+      const res = await call();
+      if (!res.ok) throw new Error(res.error || 'Something went wrong.');
+      SETUP = res;
+      renderSetup();
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = label;
+      $(msgId).className = 'msg err';
+      $(msgId).textContent = e.message;
+    }
+  };
+
+  $('#save-ai').onclick = (e) => {
+    const provider = $('input[name=provider]:checked')?.value;
+    run(e.target, '#msg-ai', 'Checking…', () => callApi('/api/setup/ai', {
+      provider,
+      language: $('#lang').value,
+      api_key: provider === 'openai' ? $('#key-openai').value : $('#key-openrouter').value,
+      base_url: $('#base-url').value,
+      model: $('#model').value,
+    }));
+  };
+  $('#connect').onclick = (e) => run(e.target, '#msg-yt', 'Reading your history… up to a minute',
+    () => callApi('/api/setup/youtube', { browser: $('#browser').value }));
+  $('#takeout').onchange = (e) => {
+    const file = e.target.files[0];
+    if (file) run($('#connect'), '#msg-yt', 'Reading the file…',
+      () => fetch('/api/setup/takeout', { method: 'POST', headers: { 'X-Filename': file.name }, body: file }).then((r) => r.json()));
+  };
+  $('#build').onclick = (e) => run(e.target, '#msg-profile', 'Thinking… about a minute', () => callApi('/api/setup/profile'));
+  $('#start')?.addEventListener('click', async () => {
+    await callApi('/api/setup/start');
+    location.hash = '#/';
+    location.reload();
+  });
+}
+
 // ---------- navigation ----------
 function route() {
   $('.toast')?.remove();
   const m = location.hash.match(/^#\/watch\/([\w-]{11})$/);
-  if (m) {
+  if (location.hash === '#/setup') {
+    moreObserver?.disconnect();
+    showSetup();
+  } else if (m) {
     if (!$('.watch')) savedY = window.scrollY;
     moreObserver?.disconnect();
     watch(m[1]);
@@ -296,7 +417,7 @@ function showStatus() {
   if (!FEED.generated) { $('#status').textContent = ST.updating ? 'Looking for videos…' : ''; return; }
   const hours = (Date.now() - new Date(FEED.generated).getTime()) / 36e5;
   const when = hours < 1 ? 'less than an hour ago' : hours < 48 ? `${Math.round(hours)} h ago` : `${Math.round(hours / 24)} days ago`;
-  $('#status').textContent = ST.updating ? 'Looking for new videos…' : `${FEED.videos.length.toLocaleString('en')} videos · updated ${when}`;
+  $('#status').textContent = `${FEED.videos.length.toLocaleString('en')} videos · ${ST.updating ? 'looking for more…' : `updated ${when}`}`;
 }
 
 window.addEventListener('hashchange', route);
@@ -311,7 +432,8 @@ Promise.all([
   for (const i of FEED.interests) interestName.set(i.id, i.name);
   feedList = rank();
   showStatus();
-  route();
+  if (!ST.ready && location.hash !== '#/setup') location.hash = '#/setup'; // first visit
+  else route();
 }).catch(() => {
-  view.innerHTML = '<p class="empty">Start PersonalTube with <code>personaltube serve</code> and open this page again.</p>';
+  view.innerHTML = '<p class="empty">PersonalTube is not running. Start it with <code>personaltube</code> and open this page again.</p>';
 });

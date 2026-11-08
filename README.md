@@ -14,7 +14,7 @@ It also works across languages. If you watch mostly Russian streamers but want E
 4. The AI rates every video it found from 0 to 10 for you. Videos in the wrong language, kids content and reupload spam get 0. Only videos rated 6 or higher reach the feed.
 5. The page ranks videos by score, freshness and your clicks. Videos you saw but skipped sink, channels you like rise, and "Not interested" pushes a channel down. Channels the AI keeps rating high become sources for the next search.
 
-The feed refreshes itself once a day while `personaltube serve` is running.
+The feed refreshes itself once a day while PersonalTube is running.
 
 ## Install
 
@@ -34,14 +34,19 @@ cd personaltube
 pipx install .
 ```
 
-Then run the setup. It asks a few questions and builds your interest profile:
+Then start it:
 
 ```sh
-personaltube setup
-personaltube serve    # opens http://localhost:8777
+personaltube
 ```
 
-The first search takes about 15 to 20 minutes. The page reloads by itself when it is done.
+Your browser opens http://localhost:8777 with a setup page of three steps:
+
+1. Pick the AI and the language of your feed, then press "Check and save". PersonalTube sends one test request.
+2. Pick the browser you are signed in to YouTube with and press "Use my browser login", or upload a Google Takeout file.
+3. Press "Build my profile". After about a minute you see your interests, and "Open my feed" starts the first search.
+
+The first videos show up after a few minutes, and the whole first search takes about 20 minutes. The gear icon in the corner opens the setup again later.
 
 ## Choose your AI
 
@@ -52,7 +57,7 @@ The first search takes about 15 to 20 minutes. The page reloads by itself when i
 | ChatGPT subscription | [Codex CLI](https://github.com/openai/codex) installed and signed in (`codex login`) | Uses your ChatGPT plan limits |
 | Any OpenAI-compatible API | A base URL and a model: OpenAI, Ollama, LM Studio and others | Free with a local model |
 
-You can change the provider or the models later in `~/.personaltube/config.json`:
+The setup page saves your choice to `~/.personaltube/config.json`. Models can be changed only there:
 
 ```json
 {
@@ -73,22 +78,15 @@ You can change the provider or the models later in `~/.personaltube/config.json`
 
 ## Connect YouTube
 
-By default PersonalTube asks [yt-dlp](https://github.com/yt-dlp/yt-dlp) to read your YouTube cookies from Chrome, Firefox, Safari, Edge, Brave, Chromium, Opera or Vivaldi. It reads up to 3,000 watched videos, 1,000 likes and all subscriptions, and changes nothing in your account. On macOS a Keychain window may ask to allow access to "Chrome Safe Storage". Click Allow.
+"Use my browser login" asks [yt-dlp](https://github.com/yt-dlp/yt-dlp) to read your YouTube cookies from Chrome, Firefox, Safari, Edge, Brave, Chromium, Opera or Vivaldi. It reads up to 3,000 watched videos, 1,000 likes and all subscriptions, and changes nothing in your account. On macOS a Keychain window may ask to allow access to "Chrome Safe Storage". Click Allow.
 
-You can also use Google Takeout. Export "YouTube and YouTube Music" at [takeout.google.com](https://takeout.google.com) (history in JSON or HTML), then:
-
-```sh
-personaltube connect --takeout ~/Downloads/takeout-2026.zip
-```
-
-Use Takeout if reading cookies fails. This often happens with Chrome on Windows; Firefox is a good alternative there.
+You can also use Google Takeout. Export "YouTube and YouTube Music" at [takeout.google.com](https://takeout.google.com) (history in JSON or HTML) and upload the zip on the setup page. Use Takeout if reading cookies fails. This often happens with Chrome on Windows; Firefox is a good alternative there.
 
 ## Commands
 
 | Command | What it does |
 | --- | --- |
-| `personaltube setup` | First run: AI, YouTube account, interest profile |
-| `personaltube serve` | Opens the feed and refreshes it once a day. `--no-open` skips the browser tab |
+| `personaltube` | Opens the site and refreshes the feed once a day. Same as `personaltube serve`; `--no-open` skips the browser tab |
 | `personaltube update` | Finds new videos now |
 | `personaltube connect` | Imports your YouTube history again. `--browser firefox` or `--takeout PATH` |
 | `personaltube profile` | Rebuilds the interest profile, for example after a few weeks of new history |
@@ -97,7 +95,7 @@ Use Takeout if reading cookies fails. This often happens with Chrome on Windows;
 
 - Everything stays in `~/.personaltube` on your computer: history, profile, clicks and the feed. Set `PERSONALTUBE_HOME` to keep it somewhere else.
 - The site listens on `127.0.0.1` only.
-- Your browser login is used only by `connect`, to read your own history. Searching for new videos is anonymous.
+- Your browser login is used only to read your own history in step 2 or by `connect`. Searching for new videos is anonymous.
 - Your AI provider gets the titles and channel names of the videos you watched and the videos it scores.
 - With a local model, nothing leaves your computer.
 
@@ -107,7 +105,7 @@ If the player says "Sign in to confirm you're not a bot", or searches come back 
 
 Some videos can only play on youtube.com. For them the player shows "The owner does not allow this video on other sites" with a button that opens the video there.
 
-If `connect` cannot read cookies, close the browser fully and run it again, try another browser, or use Takeout.
+If reading cookies fails, close that browser fully and try again, pick another browser, or use Takeout.
 
 If the feed feels off, hide a few videos with "Not interested" and like a few good ones. Then run `personaltube profile` and `personaltube update`.
 

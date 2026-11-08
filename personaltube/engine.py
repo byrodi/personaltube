@@ -14,6 +14,7 @@ SEARCH_RESULTS = 25   # videos per search query
 CHANNEL_RESULTS = 12  # latest videos per seed channel
 MIN_SCORE = 6         # videos below this AI score never reach the feed
 KEEP_DAYS = 45        # forget feed videos found longer ago than this
+PUBLISH_EVERY = 40    # score and publish after this many YouTube requests
 
 # For an English feed: titles in non-Latin scripts or with Spanish/Portuguese markers are skipped
 # before they cost an AI call. The AI also rejects other languages.
@@ -22,7 +23,7 @@ NOT_ENGLISH = re.compile(
     r"|\b(letra|significado|oficial|subtitulado|legendado|en español|ao vivo)\b", re.I)
 
 state_lock = threading.Lock()
-status = {"updating": False}
+_running = threading.Lock()  # one update at a time in this process
 
 
 # ---------- what the site reports back ----------
@@ -55,6 +56,23 @@ def apply_event(event):
             return False
         store.write("state.json", state)
     return True
+
+
+# ---------- YouTube account ----------
+
+def connect(browser=None, takeout=None):
+    """Import history, likes and subscriptions. Returns the counts."""
+    if takeout:
+        history, likes, subs = youtube.import_takeout(takeout)
+    else:
+        history, likes, subs = youtube.import_from_browser(browser)
+        cfg = store.config()
+        cfg["youtube"]["browser"] = browser
+        store.save_config(cfg)
+    store.write("history.json", history)
+    store.write("likes.json", likes)
+    store.write("subscriptions.json", subs)
+    return {"history": len(history), "likes": len(likes), "subs": len(subs)}
 
 
 # ---------- interest profile ----------
@@ -187,29 +205,27 @@ def score_videos(videos, profile, state):
 def is_updating():
     """True while an update runs in this process or in another `personaltube update`."""
     lock = store.HOME / "update.lock"
-    return status["updating"] or (lock.exists() and time.time() - lock.stat().st_mtime < 3 * 3600)
+    return _running.locked() or (lock.exists() and time.time() - lock.stat().st_mtime < 3 * 3600)
 
 
 def update():
     """Search YouTube for new videos, score them with AI and write feed.json."""
-    lock = store.HOME / "update.lock"
-    if is_updating():
+    if is_updating() or not _running.acquire(blocking=False):
         print("Another update is already running.")
         return
-    store.HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
-    lock.write_text(str(os.getpid()))
-    status["updating"] = True
+    lock = store.HOME / "update.lock"
     try:
+        store.HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
+        lock.write_text(str(os.getpid()))
         _update()
     finally:
-        status["updating"] = False
         lock.unlink(missing_ok=True)
+        _running.release()
 
 
 def _update():
     profile = store.read("profile.json") or build_profile()
     state = load_state()
-    english = store.config()["language"].lower() == "english"
 
     hidden_channels = collections.Counter(x["handle"] for x in state["hidden"].values())
     seeds = {}
@@ -225,6 +241,7 @@ def _update():
 
     found = {}
     broken = set()
+    candidates, scores = [], {}
     print(f"Searching YouTube: {len(jobs)} requests, about {len(jobs) * 6 // 60} minutes", flush=True)
     for n, (url, limit, handle) in enumerate(jobs, 1):
         result = youtube.videos(url, limit)
@@ -232,19 +249,10 @@ def _update():
             broken.add(handle)  # wrong handle or no videos tab: stop asking for it
         for v in result or []:
             found.setdefault(v["id"], v)
-        if n % 20 == 0:
+        if n % PUBLISH_EVERY == 0 or n == len(jobs):
             print(f"  {n}/{len(jobs)} requests, {len(found)} videos", flush=True)
+            candidates, scores = _publish(found, profile, state)  # first videos show up early
         time.sleep(random.uniform(1.5, 4))  # pace requests like a person browsing
-
-    skip = set(state["watched"]) | set(state["hidden"])
-    candidates = [v for v in found.values()
-                  if v["id"] not in skip and not (english and NOT_ENGLISH.search(v["title"]))]
-    scores = store.read("scores.json", {})
-    new = [v for v in candidates if v["id"] not in scores]
-    print(f"{len(candidates)} candidates, {len(new)} new to score with {ai.settings()['model'] or ai.settings()['provider']}", flush=True)
-    if new:
-        scores.update(score_videos(new, profile, state))
-        store.write("scores.json", scores)
 
     # Channels whose videos the AI rates high become seed channels next time.
     per_channel = collections.defaultdict(list)
@@ -257,6 +265,21 @@ def _update():
     for interest in profile["interests"]:
         interest["channels"] = [h for h in interest.get("channels", []) if h not in broken]
     store.write("profile.json", profile, pretty=True)
+    print("Update done.", flush=True)
+
+
+def _publish(found, profile, state):
+    """Score the videos found so far and write feed.json. Returns (candidates, scores)."""
+    english = store.config()["language"].lower() == "english"
+    skip = set(state["watched"]) | set(state["hidden"])
+    candidates = [v for v in found.values()
+                  if v["id"] not in skip and not (english and NOT_ENGLISH.search(v["title"]))]
+    scores = store.read("scores.json", {})
+    new = [v for v in candidates if v["id"] not in scores]
+    if new:
+        print(f"  scoring {len(new)} new videos with {ai.settings()['model'] or ai.settings()['provider']}", flush=True)
+        scores.update(score_videos(new, profile, state))
+        store.write("scores.json", scores)
 
     now = time.time()
     old = {v["id"]: v for v in (store.read("feed.json") or {}).get("videos", [])}
@@ -273,4 +296,5 @@ def _update():
         "interests": [{"id": i["id"], "name": i["name"], "weight": i["weight"]} for i in profile["interests"]],
         "videos": list(feed.values()),
     })
-    print(f"Feed ready: {len(feed)} videos.", flush=True)
+    print(f"  feed: {len(feed)} videos", flush=True)
+    return candidates, scores
