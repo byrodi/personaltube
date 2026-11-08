@@ -4,14 +4,14 @@ Your own YouTube home feed, picked by AI from your watch history. It runs on you
 
 You open one page and scroll. If nothing looks good, reload and you get a new mix. The feed learns from what you open, like and hide.
 
-It also works across languages. If you watch mostly Russian streamers but want English videos, it finds English creators with the same topics and the same energy. You pick the language in setup.
+It also works across languages. If you watch mostly Russian streamers but want English videos, it finds English creators with the same topics and the same energy. You say so in setup, in your own words.
 
 ## How it works
 
 1. PersonalTube reads your YouTube history, liked videos and subscriptions. It uses the YouTube login from your browser (read-only) or a Google Takeout export.
-2. An AI model turns that history into 12 to 20 interests: what you watch, which creators and formats, plus YouTube search queries and channels for each one.
+2. An AI model turns that history into 12 to 20 interests: what you watch, which creators and formats, plus YouTube search queries and channels for each one. It also writes rules every video must meet, such as its language.
 3. It searches YouTube for every query and checks the latest uploads of good channels. The searches are anonymous and paced like a person browsing.
-4. The AI rates every video it found from 0 to 10 for you. Videos in the wrong language, kids content and reupload spam get 0. Only videos rated 6 or higher reach the feed.
+4. The AI rates every video it found from 0 to 10 for you. Videos that break a rule, kids content and reupload spam get 0. Only videos rated 6 or higher reach the feed.
 5. The page ranks videos by score, freshness and your clicks. Videos you saw but skipped sink, channels you like rise, and "Not interested" pushes a channel down. Channels the AI keeps rating high become sources for the next search.
 
 The feed refreshes itself once a day while PersonalTube is running.
@@ -42,9 +42,11 @@ personaltube
 
 Your browser opens http://localhost:8777 with a setup page of three steps:
 
-1. Pick the AI and the language of your feed, then press "Check and save". PersonalTube sends one test request.
+1. Pick the AI and press "Check and save". PersonalTube sends one test request.
 2. Pick the browser you are signed in to YouTube with and press "Use my browser login", or upload a Google Takeout file.
-3. Press "Build my profile". After about a minute you see your interests, and "Open my feed" starts the first search.
+3. Press "Build my profile". After about a minute you see your interests and rules, and "Open my feed" starts the first search.
+
+Before step 3 you can tell the AI what you want in your own words, for example "I want videos in English" or "mostly gaming videos". The text shapes this one profile and is not saved. Later rebuilds keep the rules it produced and give the most weight to what you open, like and hide in the feed.
 
 The first videos show up after a few minutes, and the whole first search takes about 20 minutes. The gear icon in the corner opens the setup again later.
 
@@ -61,7 +63,6 @@ The setup page saves your choice to `~/.personaltube/config.json`. Models can be
 
 ```json
 {
-  "language": "English",
   "ai": {
     "provider": "openrouter",
     "model": "anthropic/claude-haiku-5.5",
@@ -86,10 +87,10 @@ You can also use Google Takeout. Export "YouTube and YouTube Music" at [takeout.
 
 | Command | What it does |
 | --- | --- |
-| `personaltube` | Opens the site and refreshes the feed once a day. Same as `personaltube serve`; `--no-open` skips the browser tab |
+| `personaltube` | Opens the site and refreshes the feed once a day. Same as `personaltube serve`; `--no-open` skips the browser tab, `--port` changes the port |
 | `personaltube update` | Finds new videos now |
 | `personaltube connect` | Imports your YouTube history again. `--browser firefox` or `--takeout PATH` |
-| `personaltube profile` | Rebuilds the interest profile, for example after a few weeks of new history |
+| `personaltube profile` | Rebuilds the interest profile, for example after a few weeks of new history. `--wish "..."` adds your own words to this build |
 
 ## Privacy
 

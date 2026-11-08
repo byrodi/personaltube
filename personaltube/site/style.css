@@ -121,10 +121,13 @@ main { max-width: 2200px; margin: 0 auto; padding: 8px 24px 64px; padding-bottom
 .step.locked { opacity: .45; pointer-events: none; }
 .step p { margin: 6px 0 12px; }
 .field { display: block; font-weight: 500; margin: 0 0 12px; }
-.field input, .step select {
+.field input, .field textarea, .step select {
   display: block; width: 100%; margin-top: 6px; height: 40px; padding: 0 12px;
   border: 1px solid var(--bg3); border-radius: 10px; background: var(--bg); color: var(--fg); font: inherit;
 }
+.field textarea { height: auto; padding: 10px 12px; resize: vertical; font: inherit; }
+.field .muted { font-weight: 400; }
+.rules { margin: 10px 0 0; font-weight: 500; }
 .step select { width: auto; display: inline-block; margin: 0; }
 .opts { display: grid; gap: 8px; margin: 4px 0 12px; }
 .opt { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--bg3); border-radius: 12px; cursor: pointer; }

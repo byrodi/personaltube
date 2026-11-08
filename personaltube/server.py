@@ -20,7 +20,6 @@ def setup_state():
     profile = store.read("profile.json")
     state = {
         "ai_ok": (store.HOME / "config.json").exists(),  # config is saved only after the AI answered
-        "language": cfg["language"],
         "provider": cfg["ai"]["provider"],
         "has_key": bool(cfg["ai"]["api_key"]),
         "base_url": cfg["ai"]["base_url"],
@@ -31,6 +30,7 @@ def setup_state():
         "youtube": {"history": len(history), "likes": len(store.read("likes.json", [])),
                     "subs": len(store.read("subscriptions.json", []))} if history else None,
         "interests": [i["name"] for i in profile["interests"]] if profile else [],
+        "rules": profile.get("rules", []) if profile else [],
     }
     state["ready"] = bool(state["ai_ok"] and state["youtube"] and state["interests"])
     return state
@@ -55,7 +55,7 @@ def setup_ai(body):
     error = ai.check(ai_cfg)
     if error:
         raise RuntimeError(f"The AI did not answer: {error}")
-    store.save_config({**old, "language": body.get("language", "").strip() or "English", "ai": ai_cfg})
+    store.save_config({**old, "ai": ai_cfg})
 
 
 def setup_youtube(body):
@@ -82,7 +82,7 @@ def setup_start(_body):
 SETUP_ACTIONS = {
     "/api/setup/ai": setup_ai,
     "/api/setup/youtube": setup_youtube,
-    "/api/setup/profile": lambda _body: engine.build_profile(),
+    "/api/setup/profile": lambda body: engine.build_profile(body.get("wish", "")),
     "/api/setup/start": setup_start,
 }
 
@@ -159,8 +159,8 @@ def _auto_update():
         time.sleep(3600)
 
 
-def serve(open_browser=True):
-    port = store.config()["port"]
+def serve(open_browser=True, port=None):
+    port = port or store.config()["port"]
     server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
     threading.Thread(target=_auto_update, daemon=True).start()
     url = f"http://localhost:{port}/"

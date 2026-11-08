@@ -307,7 +307,6 @@ function renderSetup() {
 
     <section class="step ${step(S.ai_ok, true)}">
       <h2><span class="num">1</span>AI that picks your videos</h2>
-      <label class="field">Language of the videos in your feed<input id="lang" value="${esc(S.language)}"></label>
       <div class="opts">${providers}</div>
       <div class="extra" data-for="openrouter">
         <label class="field">OpenRouter API key · <a href="https://openrouter.ai/keys" target="_blank" rel="noopener"><u>get a key</u></a>
@@ -338,7 +337,10 @@ function renderSetup() {
     <section class="step ${step(S.interests.length, S.youtube)}">
       <h2><span class="num">3</span>Your interests</h2>
       <p class="muted">The AI reads your history and writes down what you like. It takes about a minute.</p>
+      <label class="field">Anything the AI should know? <span class="muted">Optional, used only for this build</span>
+        <textarea id="wish" rows="2" placeholder="For example: I want videos in English. Or: mostly gaming videos, no music."></textarea></label>
       <div class="row"><button class="pill primary" id="build">${S.interests.length ? 'Build again' : 'Build my profile'}</button><span class="msg" id="msg-profile"></span></div>
+      ${S.rules.length ? `<p class="rules">Rules: ${S.rules.map(esc).join(' · ')}</p>` : ''}
       <div class="chips">${S.interests.map((i) => `<span class="chip">${esc(i)}</span>`).join('')}</div>
     </section>
 
@@ -376,7 +378,6 @@ function renderSetup() {
     const provider = $('input[name=provider]:checked')?.value;
     run(e.target, '#msg-ai', 'Checking…', () => callApi('/api/setup/ai', {
       provider,
-      language: $('#lang').value,
       api_key: provider === 'openai' ? $('#key-openai').value : $('#key-openrouter').value,
       base_url: $('#base-url').value,
       model: $('#model').value,
@@ -389,7 +390,7 @@ function renderSetup() {
     if (file) run($('#connect'), '#msg-yt', 'Reading the file…',
       () => fetch('/api/setup/takeout', { method: 'POST', headers: { 'X-Filename': file.name }, body: file }).then((r) => r.json()));
   };
-  $('#build').onclick = (e) => run(e.target, '#msg-profile', 'Thinking… about a minute', () => callApi('/api/setup/profile'));
+  $('#build').onclick = (e) => run(e.target, '#msg-profile', 'Thinking… about a minute', () => callApi('/api/setup/profile', { wish: $('#wish').value }));
   $('#start')?.addEventListener('click', async () => {
     await callApi('/api/setup/start');
     location.hash = '#/';

@@ -7,7 +7,6 @@ HOME = Path(os.environ.get("PERSONALTUBE_HOME") or Path.home() / ".personaltube"
 SITE = Path(__file__).resolve().parent / "site"
 
 DEFAULT_CONFIG = {
-    "language": "English",
     "ai": {"provider": "openrouter", "model": "", "profile_model": "", "api_key": "", "base_url": ""},
     "youtube": {"browser": "chrome"},
     "port": 8777,

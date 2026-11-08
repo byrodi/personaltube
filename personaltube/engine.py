@@ -4,7 +4,6 @@ import concurrent.futures
 import datetime
 import os
 import random
-import re
 import threading
 import time
 
@@ -15,12 +14,6 @@ CHANNEL_RESULTS = 12  # latest videos per seed channel
 MIN_SCORE = 6         # videos below this AI score never reach the feed
 KEEP_DAYS = 45        # forget feed videos found longer ago than this
 PUBLISH_EVERY = 40    # score and publish after this many YouTube requests
-
-# For an English feed: titles in non-Latin scripts or with Spanish/Portuguese markers are skipped
-# before they cost an AI call. The AI also rejects other languages.
-NOT_ENGLISH = re.compile(
-    r"[Ѐ-ӿ؀-ۿऀ-ॿ฀-๿぀-ヿ一-鿿가-힯]"
-    r"|\b(letra|significado|oficial|subtitulado|legendado|en español|ao vivo)\b", re.I)
 
 state_lock = threading.Lock()
 _running = threading.Lock()  # one update at a time in this process
@@ -77,27 +70,34 @@ def connect(browser=None, takeout=None):
 
 # ---------- interest profile ----------
 
-PROFILE_PROMPT = """You build a YouTube interest profile for one viewer.
-Their history can be in any language. They want a home feed of {language}-language videos
-that match the same tastes: same topics, same kind of creators, same energy (for example,
-{language} streamer clips if they watch streamer clips in another language).
+PROFILE_PROMPT = """You build a YouTube interest profile for one viewer: what they like, so a
+home feed can find new videos for them.
 
-You get their watch history, Shorts they watched, liked videos, subscriptions and feedback
-from the feed (liked and rejected videos).
-
+You get their YouTube watch history, Shorts, liked videos and subscriptions, and their activity in
+this feed. Activity in the feed is the newest and most important signal: when it differs from the
+older YouTube history, follow the feed activity.
+{wish}
 Return JSON:
-{{"interests": [{{
+{{"rules": ["hard requirements every video must meet, for example its language. Empty list if none"],
+ "interests": [{{
    "id": "short_snake_case",
    "name": "Short label",
    "weight": 1-10 (share of their attention),
    "about": "One or two sentences: exactly what they enjoy here, which creators and formats",
-   "queries": ["6 YouTube search queries in {language} that find popular, recent videos for this interest"],
-   "channels": ["up to 8 {language}-language YouTube channel handles like @mkbhd that fit best"]
+   "queries": ["6 YouTube search queries that find popular, recent videos for this interest"],
+   "channels": ["up to 8 YouTube channel handles like @mkbhd that fit best"]
  }}],
  "avoid": ["kinds of videos this viewer would not click"]}}
 
-Rules: 12 to 20 interests, ordered by weight. Queries must read like real YouTube searches
-(creator names, games, shows, formats), not abstract topics. Only real channels."""
+12 to 20 interests, ordered by weight. Queries must read like real YouTube searches (creator names,
+games, shows, formats), not abstract topics. Queries and channels follow the rules, for example
+English queries and English-speaking channels for an English feed. Only real channels."""
+
+WISH = """
+The viewer also wrote what they want from the feed. Follow it, it is more important than the
+history: it can set the language, change the balance of topics or add things to avoid.
+Their words: "{text}"
+"""
 
 
 def _profile_input():
@@ -105,40 +105,49 @@ def _profile_input():
     likes = store.read("likes.json", [])
     subs = store.read("subscriptions.json", [])
     state = load_state()
+    rules = (store.read("profile.json") or {}).get("rules", [])
     rng = random.Random(7)
     videos = list({h["id"]: h for h in reversed(history) if not h.get("short")}.values())[::-1]
     shorts = [h["title"] for h in history if h.get("short") and h["title"]]
     lines = []
+    for kind, title in (("watched", "Opened in the feed"), ("liked", "Liked in the feed"),
+                        ("hidden", "Rejected in the feed (not interested)")):
+        items = sorted(state[kind].values(), key=lambda x: x.get("t", 0))[-80:]
+        if items:
+            lines.append(f"## {title}, newest last")
+            lines += [f"- {x['title']} ({x['channel']})" for x in items]
+    if rules:
+        lines += ["\n## Rules of the current feed (keep them unless the feed activity shows otherwise)"]
+        lines += [f"- {r}" for r in rules]
     channels = collections.Counter(h["channel"] for h in history if h.get("channel") and not h.get("short"))
     if channels:
-        lines += ["## Most watched channels (views)",
+        lines += ["\n## YouTube: most watched channels (views)",
                   ", ".join(f"{c} ({n})" for c, n in channels.most_common(150))]
-    lines.append("\n## Watched videos, newest first")
+    lines.append("\n## YouTube: watched videos, newest first")
     lines += [f"- {h['title'][:90]}" + (f" ({h['channel']})" if h.get("channel") else "") for h in videos[:700]]
     if shorts:
-        lines.append("\n## Shorts they watched (sample)")
+        lines.append("\n## YouTube: Shorts they watched (sample)")
         lines += [f"- {t[:80]}" for t in rng.sample(shorts, min(150, len(shorts)))]
     if likes:
-        lines.append("\n## Liked videos")
+        lines.append("\n## YouTube: liked videos")
         lines += [f"- {h['title'][:90]} ({h['channel']})" for h in likes[:200]]
     if subs:
-        lines += ["\n## Subscriptions", ", ".join(s["name"] for s in subs[:1000])]
-    for kind in ("liked", "hidden"):
-        items = list(state[kind].values())[-40:]
-        if items:
-            lines.append(f"\n## Feed feedback: {kind}")
-            lines += [f"- {x['title']} ({x['channel']})" for x in items]
+        lines += ["\n## YouTube: subscriptions", ", ".join(s["name"] for s in subs[:1000])]
     return "\n".join(lines)
 
 
-def build_profile():
+def build_profile(wish=""):
+    """Build the interest profile. `wish` is the viewer's own words, used for this build only."""
     if not store.read("history.json"):
-        raise RuntimeError("No YouTube history yet. Run `personaltube connect` first.")
-    language = store.config()["language"]
+        raise RuntimeError("No YouTube history yet. Connect your YouTube account first.")
     print(f"Building your interest profile with {ai.settings()['profile_model'] or ai.settings()['provider']}…", flush=True)
-    profile = ai.ask(PROFILE_PROMPT.format(language=language), _profile_input(), big=True)
+    wish = wish.strip()[:500]
+    system = PROFILE_PROMPT.format(wish=WISH.format(text=wish.replace('"', "'")) if wish else "")
+    profile = ai.ask(system, _profile_input(), big=True)
+    profile.setdefault("rules", [])
     profile["discovered"] = (store.read("profile.json") or {}).get("discovered", [])
     store.write("profile.json", profile, pretty=True)
+    print("Rules:", "; ".join(profile["rules"]) or "none")
     print("Interests:", ", ".join(f"{i['name']} ({i['weight']})" for i in profile["interests"]))
     return profile
 
@@ -158,8 +167,11 @@ Recently liked in the feed:
 Recently rejected in the feed ("not interested"):
 {hidden}
 
+Rules every video must meet:
+{rules}
+
 For every numbered video, return how likely this viewer clicks it and enjoys it, 0-10.
-Give 0 if the video is not in {language}, is made for kids, is a low-effort reupload or
+Give 0 if the video breaks a rule, is made for kids, is a low-effort reupload or
 compilation spam, or matches no interest. Return JSON: {{"r": [[number, score, "interest_id"], ...]}}
 with one entry per video."""
 
@@ -171,7 +183,8 @@ def score_videos(videos, profile, state):
 
     system = SCORE_PROMPT.format(
         interests="\n".join(f"- {i['id']} ({i['weight']}): {i['about']}" for i in profile["interests"]),
-        avoid="; ".join(profile.get("avoid", [])), language=store.config()["language"],
+        avoid="; ".join(profile.get("avoid", [])),
+        rules="\n".join(f"- {r}" for r in profile.get("rules", [])) or "- none",
         liked=fmt(list(state["liked"].values())[-25:]), hidden=fmt(list(state["hidden"].values())[-25:]))
 
     def batch(chunk):
@@ -270,10 +283,8 @@ def _update():
 
 def _publish(found, profile, state):
     """Score the videos found so far and write feed.json. Returns (candidates, scores)."""
-    english = store.config()["language"].lower() == "english"
     skip = set(state["watched"]) | set(state["hidden"])
-    candidates = [v for v in found.values()
-                  if v["id"] not in skip and not (english and NOT_ENGLISH.search(v["title"]))]
+    candidates = [v for v in found.values() if v["id"] not in skip]
     scores = store.read("scores.json", {})
     new = [v for v in candidates if v["id"] not in scores]
     if new:
